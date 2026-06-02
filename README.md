@@ -2,7 +2,7 @@
 
 A small [pwnagotchi](https://github.com/jayofelony/pwnagotchi) UI plugin that adds two things to the screen:
 
-- **Battery + memory** together on the left.
+- **A battery column** placed just to the left of the stock `memtemp` readout (so you get `bat | mem | cpu | temp` in a row).
 - **The last cracked Wi-Fi** (SSID + password) below the face.
 
 ![screenshot](screenshot.png)
@@ -11,9 +11,9 @@ A small [pwnagotchi](https://github.com/jayofelony/pwnagotchi) UI plugin that ad
 
 ## How it works
 
-- **Memory** comes from pwnagotchi itself (`pwnagotchi.mem_usage()`).
-- **Battery** is read from [`pisugar-server`](https://github.com/PiSugar/pisugar-power-manager-rs) over its local TCP port `8423`, with a direct PiSugar 3 I2C read (`0x57`) as a fallback. If neither answers it just shows `-` instead of crashing the UI. (A bare PiSugar 2's gauge is only reachable through `pisugar-server`, so install that if you want a real %.)
-- **Last cracked Wi-Fi** is read from the [`wpa-sec`](https://wpa-sec.stanev.org/) plugin's results file (`/root/handshakes/wpa-sec.cracked.potfile`, format `bssid:station:ssid:password`). The most recent line is shown. The line is blank until that file has an entry.
+- **Battery** is read from [`pisugar-server`](https://github.com/PiSugar/pisugar-power-manager-rs) over its local TCP port `8423`, with a direct PiSugar 3 I2C read (`0x57`) as a fallback. If neither answers it shows `-` instead of crashing the UI. (A bare PiSugar 2's gauge is only reachable through `pisugar-server`, so install that if you want a real %.)
+- It does **not** show memory/CPU/temp itself — that's the stock `memtemp` plugin's job. This plugin just adds a battery column aligned next to it, so leave `memtemp` enabled.
+- **Last cracked Wi-Fi** is read from the [`wpa-sec`](https://wpa-sec.stanev.org/) plugin's results file (`/root/handshakes/wpa-sec.cracked.potfile`, format `bssid:station:ssid:password`). The most recent line is shown. The line is blank until that file has an entry, and the text is trimmed (SSID first, password kept) so it stays clear of the memtemp column.
 
 ## Install
 
@@ -30,8 +30,6 @@ A small [pwnagotchi](https://github.com/jayofelony/pwnagotchi) UI plugin that ad
    main.plugins.customstats.enabled = true
    ```
 
-   (If you also run the `memtemp` plugin you may want to disable it, since this shows memory too and they can overlap.)
-
 3. Restart:
 
    ```bash
@@ -40,14 +38,15 @@ A small [pwnagotchi](https://github.com/jayofelony/pwnagotchi) UI plugin that ad
 
 ## Options
 
-All optional — sensible defaults are tuned for the Waveshare 2.13" V3 (250×122). Override in `config.toml` to reposition for other displays:
+All optional. Defaults are tuned for the Waveshare 2.13" V3 (250×122) with `memtemp` in its default position. Override in `config.toml` to reposition for other displays or `memtemp` layouts:
 
 ```toml
-main.plugins.customstats.potfile   = "/root/handshakes/wpa-sec.cracked.potfile"
-main.plugins.customstats.membat_x  = 0
-main.plugins.customstats.membat_y  = 78
-main.plugins.customstats.cracked_x = 0
-main.plugins.customstats.cracked_y = 91
+main.plugins.customstats.potfile     = "/root/handshakes/wpa-sec.cracked.potfile"
+main.plugins.customstats.bat_x       = 125   # battery column; sits one column left of memtemp (155, 76)
+main.plugins.customstats.bat_y       = 76
+main.plugins.customstats.cracked_x   = 0     # cracked Wi-Fi line, below the face
+main.plugins.customstats.cracked_y   = 91
+main.plugins.customstats.cracked_max = 24    # max chars before trimming (keeps it left of memtemp)
 ```
 
 ## Note on use

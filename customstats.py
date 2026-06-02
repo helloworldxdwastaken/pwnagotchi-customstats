@@ -3,7 +3,6 @@ import os
 import time
 import socket
 
-import pwnagotchi
 import pwnagotchi.plugins as plugins
 import pwnagotchi.ui.fonts as fonts
 from pwnagotchi.ui.components import Text
@@ -12,24 +11,28 @@ from pwnagotchi.ui.view import BLACK
 
 class CustomStats(plugins.Plugin):
     __author__ = 'info.dronx@gmail.com'
-    __version__ = '1.0.0'
+    __version__ = '1.1.0'
     __license__ = 'GPL3'
-    __description__ = ('Battery + memory on the left, and the last cracked Wi-Fi '
-                       '(SSID + password) below the face.')
+    __description__ = ('Adds a battery column just left of the memtemp readout, '
+                       'and the last cracked Wi-Fi (SSID + password) below the face.')
+
+    FIELD_WIDTH = 4   # match memtemp's column width so battery lines up as a 4th column
+    CRACKED_MAX = 24  # keep the cracked line left of the memtemp column (x~155)
 
     def __init__(self):
-        self._membat = '-'
         self._bat = None
         self._bat_ts = 0
         self._cracked = ''
         self._cracked_ts = 0
         self._cracked_mtime = -1
 
+    def _pad(self, s):
+        return ' ' * max(0, self.FIELD_WIDTH - len(s)) + s
+
     # ---- battery -----------------------------------------------------------
-    # PiSugar's battery gauge (IP5209 on the PiSugar 2) is only readable through
-    # pisugar-server's tiny TCP protocol on :8423. We also try a direct PiSugar 3
-    # register read as a bonus. If neither answers we just show '-' instead of
-    # crashing the UI.
+    # PiSugar's gauge (IP5209 on the PiSugar 2) is only readable through
+    # pisugar-server's TCP protocol on :8423. A direct PiSugar 3 register read
+    # (0x57) is tried as a fallback. If neither answers we show '-'.
     def _read_pisugar_server(self):
         try:
             s = socket.create_connection(('127.0.0.1', 8423), timeout=0.4)
@@ -102,9 +105,9 @@ class CustomStats(plugins.Plugin):
             ssid = parts[2]
             pw = ':'.join(parts[3:])
             combined = '%s: %s' % (ssid, pw)
-            if len(combined) > 38:
-                avail = max(1, 38 - len(pw) - 2)
-                combined = ('%s: %s' % (ssid[:avail], pw))[:38]
+            if len(combined) > self._cracked_max:
+                avail = max(1, self._cracked_max - len(pw) - 2)
+                combined = ('%s: %s' % (ssid[:avail], pw))[:self._cracked_max]
             self._cracked = combined
         else:
             self._cracked = ''
@@ -114,31 +117,35 @@ class CustomStats(plugins.Plugin):
     def on_loaded(self):
         self._potfile = self.options.get('potfile',
                                          '/root/handshakes/wpa-sec.cracked.potfile')
-        self._membat_pos = (int(self.options.get('membat_x', 0)),
-                            int(self.options.get('membat_y', 78)))
+        # default sits one 4-char column left of memtemp's (155, 76) on a 250x122 V3
+        self._bat_pos = (int(self.options.get('bat_x', 125)),
+                         int(self.options.get('bat_y', 76)))
         self._cracked_pos = (int(self.options.get('cracked_x', 0)),
-                            int(self.options.get('cracked_y', 91)))
+                             int(self.options.get('cracked_y', 91)))
+        self._cracked_max = int(self.options.get('cracked_max', self.CRACKED_MAX))
         logging.info('[customstats] loaded (potfile=%s)' % self._potfile)
 
     def on_ui_setup(self, ui):
-        ui.add_element('cs_membat', Text(color=BLACK, value='MEM -% BAT -',
-                                         position=self._membat_pos, font=fonts.Small))
+        x, y = self._bat_pos
+        ui.add_element('cs_bat_label', Text(color=BLACK, value=self._pad('bat'),
+                                            position=(x, y), font=fonts.Small))
+        ui.add_element('cs_bat', Text(color=BLACK, value=self._pad('-'),
+                                      position=(x, y + 10), font=fonts.Small))
         ui.add_element('cs_cracked', Text(color=BLACK, value='',
                                           position=self._cracked_pos, font=fonts.Small))
 
     def on_ui_update(self, ui):
-        mem = int(pwnagotchi.mem_usage() * 100)
-        membat = 'MEM %d%% BAT %s' % (mem, self._battery())
+        bat = self._pad(self._battery())
         cracked = self._last_cracked(self._potfile)
         with ui._lock:
-            ui.set('cs_membat', membat)
+            ui.set('cs_bat', bat)
             ui.set('cs_cracked', cracked)
 
     def on_unload(self, ui):
         with ui._lock:
-            try:
-                ui.remove_element('cs_membat')
-                ui.remove_element('cs_cracked')
-            except Exception:
-                pass
+            for key in ('cs_bat_label', 'cs_bat', 'cs_cracked'):
+                try:
+                    ui.remove_element(key)
+                except Exception:
+                    pass
         logging.info('[customstats] unloaded')
