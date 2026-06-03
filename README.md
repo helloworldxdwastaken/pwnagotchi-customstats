@@ -11,7 +11,8 @@ A small [pwnagotchi](https://github.com/jayofelony/pwnagotchi) UI plugin that ad
 
 ## How it works
 
-- **Battery** is read from [`pisugar-server`](https://github.com/PiSugar/pisugar-power-manager-rs) over its local TCP port `8423`, with a direct PiSugar 3 I2C read (`0x57`) as a fallback. If neither answers it shows `-` instead of crashing the UI. (A bare PiSugar 2's gauge is only reachable through `pisugar-server`, so install that if you want a real %.)
+- **Battery** is resolved in this order: [`pisugar-server`](https://github.com/PiSugar/pisugar-power-manager-rs) on TCP `8423` if it's installed, otherwise a **direct I2C read of the gauge — no server required**: **PiSugar 3** (battery-% register at `0x57`) or **PiSugar 2** (IP5209 gauge voltage at `0x75`, mapped to % via a discharge curve). If nothing answers it shows `-` instead of crashing the UI.
+  - *PiSugar 2 note:* the IP5209 only powers up (and answers on I2C) while the board is **charging or running the Pi from the battery**. If the Pi is fed only through its own USB **data** port, the gauge sleeps and you'll see `-`. Charge through the PiSugar's own micro-USB port (or run on battery) to get a reading.
 - It does **not** show memory/CPU/temp itself — that's the stock `memtemp` plugin's job. This plugin just adds a battery column aligned next to it, so leave `memtemp` enabled.
 - **Last cracked Wi-Fi** is read from the [`wpa-sec`](https://wpa-sec.stanev.org/) plugin's results file (`/root/handshakes/wpa-sec.cracked.potfile`, format `bssid:station:ssid:password`). The most recent line is shown. The line is blank until that file has an entry, and the text is trimmed (SSID first, password kept) so it stays clear of the memtemp column.
 

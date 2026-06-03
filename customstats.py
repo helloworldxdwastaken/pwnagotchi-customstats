@@ -11,7 +11,7 @@ from pwnagotchi.ui.view import BLACK
 
 class CustomStats(plugins.Plugin):
     __author__ = 'info.dronx@gmail.com'
-    __version__ = '1.1.0'
+    __version__ = '1.2.0'
     __license__ = 'GPL3'
     __description__ = ('Adds a battery column just left of the memtemp readout, '
                        'and the last cracked Wi-Fi (SSID + password) below the face.')
@@ -30,9 +30,50 @@ class CustomStats(plugins.Plugin):
         return ' ' * max(0, self.FIELD_WIDTH - len(s)) + s
 
     # ---- battery -----------------------------------------------------------
-    # PiSugar's gauge (IP5209 on the PiSugar 2) is only readable through
-    # pisugar-server's TCP protocol on :8423. A direct PiSugar 3 register read
-    # (0x57) is tried as a fallback. If neither answers we show '-'.
+    # Battery % is resolved in this order:
+    #   1. pisugar-server's TCP protocol on :8423 (if it happens to be installed)
+    #   2. direct I2C read, no server needed:
+    #        - PiSugar 3: battery % register @ 0x57
+    #        - PiSugar 2: IP5209 gauge voltage @ 0x75, mapped to % via a
+    #          discharge curve (the PiSugar 2 gauge only exposes voltage)
+    # If nothing answers we show '-'.
+    #
+    # PiSugar 2 note: the IP5209 only powers up (and answers on I2C) while the
+    # board is charging or running the Pi from the battery; if the Pi is fed
+    # only through its own USB data port the gauge sleeps and we show '-'.
+
+    # PiSugar 2 default discharge curve (battery volts -> charge %)
+    _IP5209_CURVE = [
+        (4.16, 100.0), (4.05, 95.0), (4.00, 80.0), (3.92, 65.0),
+        (3.86, 40.0), (3.79, 25.0), (3.66, 10.0), (3.52, 6.5),
+        (3.49, 3.2), (3.10, 0.0),
+    ]
+
+    @staticmethod
+    def _volts_to_pct(volts, curve):
+        if volts >= curve[0][0]:
+            return 100
+        if volts <= curve[-1][0]:
+            return 0
+        for i in range(len(curve) - 1):
+            v1, p1 = curve[i]
+            v2, p2 = curve[i + 1]
+            if v2 <= volts <= v1:
+                return int(round(p2 + (volts - v2) * (p1 - p2) / (v1 - v2)))
+        return 0
+
+    @staticmethod
+    def _read_ip5209_volts(bus):
+        # IP5209 battery voltage from two registers (0xa2 low, 0xa3 high)
+        low = bus.read_byte_data(0x75, 0xa2)
+        high = bus.read_byte_data(0x75, 0xa3)
+        if high & 0x20:
+            raw = ((high | 0xc0) << 8) + low
+            if raw > 32767:
+                raw -= 65536
+        else:
+            raw = ((high & 0x1f) << 8) + low
+        return (2600.0 + raw * 0.26855) / 1000.0
     def _read_pisugar_server(self):
         try:
             s = socket.create_connection(('127.0.0.1', 8423), timeout=0.4)
@@ -52,16 +93,33 @@ class CustomStats(plugins.Plugin):
 
     def _read_i2c(self):
         try:
-            import smbus
-            bus = smbus.SMBus(1)
             try:
-                pct = bus.read_byte_data(0x57, 0x2a)  # PiSugar 3 battery %
+                from smbus2 import SMBus
+            except Exception:
+                from smbus import SMBus
+            bus = SMBus(1)
+        except Exception:
+            return None
+        try:
+            # PiSugar 3: battery % is a direct register at 0x57
+            try:
+                pct = bus.read_byte_data(0x57, 0x2a)
                 if 0 <= pct <= 100:
                     return int(pct)
             except Exception:
                 pass
-        except Exception:
-            return None
+            # PiSugar 2: IP5209 gauge at 0x75 exposes voltage -> map to %
+            try:
+                volts = self._read_ip5209_volts(bus)
+                if 2.5 <= volts <= 4.5:
+                    return self._volts_to_pct(volts, self._IP5209_CURVE)
+            except Exception:
+                pass
+        finally:
+            try:
+                bus.close()
+            except Exception:
+                pass
         return None
 
     def _battery(self):
