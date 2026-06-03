@@ -11,10 +11,11 @@ from pwnagotchi.ui.view import BLACK
 
 class CustomStats(plugins.Plugin):
     __author__ = 'info.dronx@gmail.com'
-    __version__ = '1.2.0'
+    __version__ = '1.3.0'
     __license__ = 'GPL3'
     __description__ = ('Adds a battery column just left of the memtemp readout, '
-                       'and the last cracked Wi-Fi (SSID + password) below the face.')
+                       'and the cracked Wi-Fi (SSID + password) below the face, '
+                       'rotating through all cracked networks every few seconds.')
 
     FIELD_WIDTH = 4   # match memtemp's column width so battery lines up as a 4th column
     CRACKED_MAX = 24  # keep the cracked line left of the memtemp column (x~155)
@@ -22,8 +23,9 @@ class CustomStats(plugins.Plugin):
     def __init__(self):
         self._bat = None
         self._bat_ts = 0
-        self._cracked = ''
-        self._cracked_ts = 0
+        self._cracked_list = []
+        self._cracked_idx = 0
+        self._cracked_rot_ts = 0
         self._cracked_mtime = -1
 
     def _pad(self, s):
@@ -133,43 +135,64 @@ class CustomStats(plugins.Plugin):
         self._bat = ('%d%%' % pct) if pct is not None else '-'
         return self._bat
 
-    # ---- last cracked wifi -------------------------------------------------
-    def _last_cracked(self, potfile):
-        now = time.time()
-        if now - self._cracked_ts < 10:
-            return self._cracked
-        self._cracked_ts = now
+    # ---- cracked wifi (rotates through ALL cracked entries) ----------------
+    def _refresh_cracked(self, potfile):
+        # reload the list only when the potfile actually changes
         try:
             mtime = os.path.getmtime(potfile)
         except OSError:
-            self._cracked = ''
-            return self._cracked
+            self._cracked_list = []
+            self._cracked_mtime = -1
+            return
         if mtime == self._cracked_mtime:
-            return self._cracked
+            return
         self._cracked_mtime = mtime
-        last = ''
+        rows = []
         try:
             with open(potfile, 'r', errors='replace') as f:
                 for line in f:
                     line = line.strip()
-                    if line:
-                        last = line
+                    if not line:
+                        continue
+                    # wpa-sec.cracked.potfile format: bssid:station:ssid:password
+                    parts = line.split(':')
+                    if len(parts) >= 4:
+                        rows.append((parts[2], ':'.join(parts[3:])))
         except OSError:
-            self._cracked = ''
-            return self._cracked
-        # wpa-sec.cracked.potfile format: bssid:station:ssid:password
-        parts = last.split(':')
-        if len(parts) >= 4:
-            ssid = parts[2]
-            pw = ':'.join(parts[3:])
-            combined = '%s: %s' % (ssid, pw)
-            if len(combined) > self._cracked_max:
-                avail = max(1, self._cracked_max - len(pw) - 2)
-                combined = ('%s: %s' % (ssid[:avail], pw))[:self._cracked_max]
-            self._cracked = combined
-        else:
-            self._cracked = ''
-        return self._cracked
+            rows = []
+        # de-dup, preserve order
+        seen = set()
+        uniq = []
+        for r in rows:
+            if r not in seen:
+                seen.add(r)
+                uniq.append(r)
+        self._cracked_list = uniq
+        if self._cracked_idx >= len(uniq):
+            self._cracked_idx = 0
+
+    def _fmt_cracked(self, ssid, pw):
+        combined = '%s: %s' % (ssid, pw)
+        if len(combined) > self._cracked_max:
+            avail = max(1, self._cracked_max - len(pw) - 2)
+            combined = ('%s: %s' % (ssid[:avail], pw))[:self._cracked_max]
+        return combined
+
+    def _cracked_display(self, potfile):
+        self._refresh_cracked(potfile)
+        n = len(self._cracked_list)
+        if n == 0:
+            return ''
+        now = time.time()
+        # advance to the next cracked network every `cracked_rotate` seconds
+        # (0 = no rotation, just show the first). Bounded by the UI refresh rate.
+        if self._cracked_rotate > 0 and n > 1 and (now - self._cracked_rot_ts) >= self._cracked_rotate:
+            self._cracked_idx = (self._cracked_idx + 1) % n
+            self._cracked_rot_ts = now
+        if self._cracked_idx >= n:
+            self._cracked_idx = 0
+        ssid, pw = self._cracked_list[self._cracked_idx]
+        return self._fmt_cracked(ssid, pw)
 
     # ---- hooks -------------------------------------------------------------
     def on_loaded(self):
@@ -181,7 +204,10 @@ class CustomStats(plugins.Plugin):
         self._cracked_pos = (int(self.options.get('cracked_x', 0)),
                              int(self.options.get('cracked_y', 91)))
         self._cracked_max = int(self.options.get('cracked_max', self.CRACKED_MAX))
-        logging.info('[customstats] loaded (potfile=%s)' % self._potfile)
+        # seconds between rotating to the next cracked network (0 = no rotation)
+        self._cracked_rotate = int(self.options.get('cracked_rotate', 5))
+        logging.info('[customstats] loaded (potfile=%s, rotate=%ss)'
+                     % (self._potfile, self._cracked_rotate))
 
     def on_ui_setup(self, ui):
         x, y = self._bat_pos
@@ -194,7 +220,7 @@ class CustomStats(plugins.Plugin):
 
     def on_ui_update(self, ui):
         bat = self._pad(self._battery())
-        cracked = self._last_cracked(self._potfile)
+        cracked = self._cracked_display(self._potfile)
         with ui._lock:
             ui.set('cs_bat', bat)
             ui.set('cs_cracked', cracked)
